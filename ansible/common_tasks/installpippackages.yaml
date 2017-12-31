@@ -1,0 +1,20 @@
+---
+- name: "Create IOTA directory if it does not exist"
+  file:
+   path: /home/pi/iota
+   state: directory
+
+- name: "Copy python requirements.txt file"  
+  become: no
+  copy:
+   src: config_files/requirements.txt
+   dest: /home/pi/iota/requirements.txt 
+   owner: pi
+   group: pi
+   mode: u=rw,g=r,o=r
+   force: yes
+
+- name: "Install pip packages from requirements file"
+  pip: 
+   requirements: "/home/pi/iota/requirements.txt"
+   state: latest

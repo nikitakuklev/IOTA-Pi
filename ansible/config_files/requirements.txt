@@ -1,0 +1,3 @@
+# Required python3 packages
+RPi.GPIO
+numpy
