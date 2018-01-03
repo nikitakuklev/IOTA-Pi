@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<head>
+   <title>Current Status</title>
+   <style>
+	table {
+		font-family: arial, sans-serif;
+		border-collapse: collapse;
+		width: 90%;
+	}
+
+	td, th {
+		border: 1px solid #dddddd;
+		text-align: left;
+		padding: 4px;
+	}
+
+	tr:nth-child(even) {
+		background-color: #dddddd;
+	}
+	</style>
+</head>
+
+<body>
+   <h1>IOTAPi Status Page</h1>
+	<table>
+		 <tr>
+			<th>Parameter</th><th>Value</th>				
+		 </tr>
+	 {% for value in value_dict %}
+		 <tr>
+			<td>{{ value }}</td><td>{{ value_dict[value] }}</td>				
+		 </tr>
+	 {% endfor %}
+	</table>
+	
+	 <h2>GPIO</h2>	 
+	 
+	<table>
+		 <tr>
+			<th>BCM Pin</th>
+			<th>PCB Pin</th>
+			<th>Mode</th>	
+			<th>Value</th>			
+		 </tr>
+	 {% for pin,state in pin_summary.items() %}
+		 <tr>
+			<td>{{ state.pin_bcm }}</td>
+			<td>{{ state.pin_pcb }}</td>
+			<td>{{ state.state }}</td>	
+			<td>{{ state.value }}</td>				
+		 </tr>
+	 {% endfor %}
+	</table>
+</body>
+</html>
