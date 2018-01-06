@@ -1,0 +1,25 @@
+{
+  "config_version": 1,
+  "compatible_with": 0,
+  "motors": {
+    "Stage01": {
+      "friendly_name": "Stage_stepper_01",
+      "step_size": 1,
+      "step_pulse_time": 100,
+      "pin_direction": 13,
+      "pin_step": 14,
+      "pin_enable": 10,
+      "pin_sleep": 12
+    },
+    "Stage01": {
+      "friendly_name": "Stage_stepper_02",
+      "step_size": 1,
+      "step_pulse_time": 100,
+      "pin_direction": 13,
+      "pin_step": 14,
+      "pin_enable": 10,
+      "pin_sleep": 12
+    }
+  }
+}
+
