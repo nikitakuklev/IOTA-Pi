@@ -32,6 +32,23 @@ def addMotor(mt):
     motors[mt.name] = mt
     logger.debug("Added motor %s to the control list", mt.name)
 
+# Runs actual initialization for all declared motors
+def init_motors():
+    if (isRPi):
+        # First, set all pins to input in the manager unless they are not in that function
+        GPIO.setmode(GPIO.BCM)
+        for pin in Util.BCM_PINS:
+            if GPIO.gpio_function(pin) == GPIO.IN:
+                GPIO.setup(pin,GPIO.IN)
+            else:
+                raise AttributeError("Pins not inputs during motor init")
+
+        # Run initialization
+        for m in motors.values():
+            m.initialize()
+    else:
+        pass
+
 # Sanity check wrapper
 def get_pin_value(pin):
     assert pin in Util.BCM_PINS
@@ -73,6 +90,7 @@ def pulse_pin(pin, tm):
     set_pin_value(pin, GPIO.HIGH)
     time.sleep(tm)
     set_pin_value(pin, GPIO.LOW)
+
 
 def test1():
     if (isRPi):

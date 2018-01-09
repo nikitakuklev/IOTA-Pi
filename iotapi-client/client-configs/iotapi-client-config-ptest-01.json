@@ -9,17 +9,11 @@
       "pin_direction": 27,
       "pin_step": 22,
       "pin_enable": 17,
-      "pin_sleep": 5
-    },
-    "Stage02": {
-      "friendly_name": "Stage_stepper_02",
-      "step_size": 3,
-      "step_pulse_time": 55,
-      "pin_direction": 7,
-      "pin_step": 10,
-      "pin_enable": 23,
-      "pin_sleep": 18
+      "pin_sleep": 5,
+      "pin_lim_up":13,
+      "lim_up_state":0,
+      "pin_lim_dn":19,
+      "lim_dn_state":0
     }
   }
 }
-

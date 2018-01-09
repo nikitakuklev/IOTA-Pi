@@ -21,7 +21,8 @@ def load_config(config_path):
             if config.get('motors'):
                 for k,motor in config['motors'].items():
                     mt = Stepper(k,motor['friendly_name'],motor['pin_direction'],motor['pin_step'],
-                                 motor['pin_enable'],motor['pin_sleep'],motor['step_pulse_time'])
+                                 motor['pin_enable'],motor['pin_sleep'],motor['pin_lim_up'],motor['pin_lim_dn'],
+                                 motor['lim_up_state'],motor['lim_dn_state'],motor['step_pulse_time'])
                     GPIOMgr.addMotor(mt)
             else:
                 logger.warning('No motors found in config file!')
@@ -44,12 +45,12 @@ def main():
     logger.debug("Loading config")
     load_config(args.config)
 
+    logger.info("Initializing motors")
+    GPIOMgr.init_motors()
+
     Webserver.init_flask()
     logger.debug("Webserver initialized")
-
     logger.info("Startup complete")
-
-
 
 if __name__ == '__main__':
     main()
