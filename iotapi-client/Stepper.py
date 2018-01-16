@@ -19,12 +19,13 @@ class Stepper:
     position = -1
     state = UNKNOWN
 
-    def __init__(self, name, fname, Dr, St, En, Sl, LUp, LDn, LUpState, LDnState, ptime):
+    def __init__(self, uuid, name, fname, Dr, St, En, Sl, LUp, LDn, LUpState, LDnState, ptime):
         self.logger = logging.getLogger(__name__)
         try:
             assert (all(x in Util.BCM_PINS for x in [Dr, St, En, Sl, LUp, LDn]))
             assert (all(x in [0,1] for x in [LUpState, LDnState]))
             assert (1 <= ptime < 1000)
+            self.uuid = uuid
             self.name = name
             self.fname = fname
             self.PIN_DIR = Dr
@@ -47,34 +48,64 @@ class Stepper:
             raise
 
     # Queries actual hardware for status (it can be non-default from previous runs for instance)
-    def initialize(self):
-        self.logger.info("Stepper %s - starting initialization", self.fname)
-        self.direction = self._get_direction()
-        self.position = 0
-        self.enabled = self.is_enabled()
-        self.awake = self.is_awake()
-        if not self.awake or not self.enabled:
-            self.logger.warning("New motor is either asleep or disabled")
-        self.state = IDLE
-        self.logger.info("Stepper %s initialized!", self.fname)
+    def initialize(self, RPi=True):
+        if (RPi):
+            self.logger.info("Stepper %s - starting initialization", self.fname)
+            self.direction = self._get_direction()
+            self.position = 0
+            self.enabled = self.is_enabled()
+            self.awake = self.is_awake()
+            if not self.awake or not self.enabled:
+                self.logger.warning("New motor is either asleep or disabled")
+            self.state = IDLE
+            self.logger.info("Stepper %s initialized - dir %s, en %s, awk %s",
+                             self.fname, self.direction, self.enabled, self.awake)
+        else:
+            self.logger.info("Stepper %s - starting initialization", self.fname)
+            self.direction = 1
+            self.position = 0
+            self.enabled = 1
+            self.awake = 1
+            if not self.awake or not self.enabled:
+                self.logger.warning("New motor is either asleep or disabled")
+            self.state = IDLE
+            self.logger.info("Stepper %s initialized - dir %s, en %s, awk %s",
+                             self.fname, self.direction, self.enabled, self.awake)
 
     # For steppers, we can reset live without any further actions
     def reinitialize(self):
         if not self.moving:
             self.initialize()
 
+    def dumpState(self):
+        results = {}
+        if self.state == UNKNOWN or self.state == UNINITIALIZED:
+            results = {
+                'Fname': self.fname,
+                'State': self.state,
+                'StateStr': STATES_STR[self.state],
+            }
+        else:
+            results = {
+                'Fname': self.fname,
+                 'State': self.state,
+                 'StateStr': STATES_STR[self.state],
+                 'Position': self.position,
+                 'Direction': self.direction
+             }
+        return results
 
     # Checks if there are any interlocks active
-    def check_interlocks(self):
+    def checkInterlocks(self):
         # First check ESTOP
         if self.ESTOP:
-            self.logger.warn("Stepper %s - ESTOP interlock fail", self.fname)
+            self.logger.warning("Stepper %s - ESTOP interlock fail", self.fname)
             return False
         # Then check both limits
-        if self._is_lim_reached(self.DIR_UP):
+        if self.is_lim_reached(self.DIR_UP):
             self.logger.warning("Stepper %s - LIM UP fail", self.fname)
             return False
-        if self._is_lim_reached(self.DIR_DN):
+        if self.is_lim_reached(self.DIR_DN):
             self.logger.warning("Stepper %s - LIM DN fail", self.fname)
             return False
         # Nothing else for now, but we should add other sanity checks...
@@ -82,12 +113,22 @@ class Stepper:
         return True
 
     # The main command that should be called by other functions
-    def move(self, dir, numsteps):
-        if self.moving: raise SystemError("Move ordered while another in progress")
+    def move(self, dir, numsteps, block=False):
+        if not self.checkInterlocks():
+            self.logger.warning('Motor %s interlock fail - move ignored!', self.uuid)
+            return False
 
-        self.logger.info("%s move - %d steps in direction %d", self.name, numsteps, dir)
-        numsteps = int(numsteps)
+        if self.moving:
+            self.logger.warning('Motor %s is currently moving!',self.uuid)
+            #raise SystemError("Move ordered while another in progress")
+
+        # Final safety checks
         assert(0 <= numsteps < 1000)
+        dir = int(dir)
+        numsteps = int(numsteps)
+
+        self.logger.info("Motor %s move - %d steps in direction %d", self.uuid, numsteps, dir)
+
         if dir == Stepper.DIR_UP or dir == Stepper.DIR_DN:
             if dir != self.direction:
                 self._set_direction(dir)
@@ -118,10 +159,10 @@ class Stepper:
 
     # Checks if limit reached (indicated by LOW, closed circuit)
     def is_lim_reached(self, direction):
-        if direction == self.DIR_UP:
-            return GPIOMgr.get_pin_value(self.PIN_LIM_UP) == self.LIM_DN_HIT
+        if direction == self.DIR_DN:
+            return GPIOMgr.get_pin_value(self.PIN_LIM_DN) == self.LIM_DN_HIT
         elif direction == self.DIR_UP:
-            return GPIOMgr.get_pin_value(self.PIN_LIM_UP) == self.LIM_DN_HIT
+            return GPIOMgr.get_pin_value(self.PIN_LIM_UP) == self.LIM_UP_HIT
         else:
             raise ValueError("Wrong limit check direction")
 

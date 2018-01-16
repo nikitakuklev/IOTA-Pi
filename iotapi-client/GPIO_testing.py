@@ -7,9 +7,8 @@ import Util, GPIOMgr
 import Webserver
 from Stepper import Stepper
 
-
-
 logger = logging.getLogger(__name__)
+
 
 def load_config(config_path):
     try:
@@ -20,12 +19,13 @@ def load_config(config_path):
                 sys.exit(3)
             if config.get('motors'):
                 for k,motor in config['motors'].items():
-                    mt = Stepper(k,motor['friendly_name'],motor['pin_direction'],motor['pin_step'],
+                    mt = Stepper(motor['uuid'],k,motor['friendly_name'],motor['pin_direction'],motor['pin_step'],
                                  motor['pin_enable'],motor['pin_sleep'],motor['pin_lim_up'],motor['pin_lim_dn'],
                                  motor['lim_up_state'],motor['lim_dn_state'],motor['step_pulse_time'])
                     GPIOMgr.addMotor(mt)
             else:
                 logger.warning('No motors found in config file!')
+            GPIOMgr.config_raw = config
     except SystemExit:
         raise
     except Exception as e:

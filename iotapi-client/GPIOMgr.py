@@ -2,7 +2,8 @@ import collections, sys, os, logging, time
 import Util
 
 logger = logging.getLogger(__name__)
-motors = {}
+motors = collections.OrderedDict()
+config_raw = None
 lockout = True # Currently used for blocking actual output changes during testing
 
 # Test if we are on actual RPi
@@ -26,11 +27,11 @@ else:
 # Note that motors are disabled on creation, so this can be done after Stepper object is made
 def addMotor(mt):
     for mtprev in motors.values():
-        if mtprev.name == mt.name or mtprev.fname == mt.fname:
-            raise ValueError("Attempt to add a motor with same name attribute (%s)(%s)!")
+        if mtprev.uuid == mt.uuid or mtprev.name == mt.name or mtprev.fname == mt.fname:
+            raise ValueError("Attempt to add a motor with repeat name attributes!")
 
-    motors[mt.name] = mt
-    logger.debug("Added motor %s to the control list", mt.name)
+    motors[mt.uuid] = mt
+    logger.debug("Added motor %s (%s) to the control list", mt.uuid, mt.fname)
 
 # Runs actual initialization for all declared motors
 def init_motors():
@@ -47,7 +48,9 @@ def init_motors():
         for m in motors.values():
             m.initialize()
     else:
-        pass
+        # Run initialization
+        for m in motors.values():
+            m.initialize(RPi=False)
 
 # Sanity check wrapper
 def get_pin_value(pin):

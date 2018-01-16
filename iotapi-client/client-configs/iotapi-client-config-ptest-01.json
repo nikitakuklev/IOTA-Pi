@@ -4,6 +4,7 @@
   "motors": {
     "Stage01": {
       "friendly_name": "Stage_stepper_01",
+      "uuid": 1,
       "step_size": 1,
       "step_pulse_time": 1,
       "pin_direction": 27,
