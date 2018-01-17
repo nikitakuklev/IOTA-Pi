@@ -36,9 +36,9 @@ def getExternalIP():
     try:
         # doesn't even have to be reachable
         s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
+        return s.getsockname()[0]
     except:
-        IP = '127.0.0.1 (can\'t find public one!)'
+        return'127.0.0.1 (can\'t find public one!)'
     finally:
         s.close()
 
@@ -50,7 +50,10 @@ def web_motorview(motornum):
     Create json for specified or all motors
     :return:
     """
-    motornum = int(motornum)
+    try:
+        motornum = int(motornum)
+    except:
+        return 'Invalid motor number', 400
     results = {}
     #print(list(GPIOMgr.motors.keys()))
     logger.debug('Motor page accessed with parameter %s', motornum)
@@ -62,9 +65,9 @@ def web_motorview(motornum):
         results[motornum] = GPIOMgr.motors[motornum].dumpState()
         return jsonify(results)
     else:
-        return abort(400)
+        return 'Motor UUID not found', 400
 
-@app.route("/motors/move/", methods=['POST'])
+@app.route("/move/", methods=['POST'])
 #@app.route("/motors/move/<motornum>", methods=['POST'])
 def web_motorcommand():
     logger.debug("Incoming move command %s", request.data)
@@ -89,15 +92,57 @@ def web_motorcommand():
         logger.warning('Invalid move parameters specified!')
         return 'Invalid move parameters specified!', 400
     state = mt.state
-    logger.info('Move %s steps in %s ordered for motor %s in state %s', steps, direction, mt.uuid, state)
+    logger.info('Move %s steps in dir %s ordered for motor %s in state %s', steps, direction, mt.uuid, state)
     if mt.state != Stepper.IDLE:
         logger.warning('Motor %s in invalid state %s', mt.uuid, state)
     if 'block' in content and content['block']:
         moveok = mt.move(direction, steps, block=True)
     else:
         moveok = mt.move(direction, steps)
-    return moveok
+    return str(moveok)
 
+
+@app.route("/stop/", methods=['POST'])
+#@app.route("/motors/stop")
+def web_motorabort():
+    logger.info("Incoming abort command %s", request.data)
+    content = request.get_json(force=False, silent=True)
+    if not request.is_json or content is None:
+        logger.warning('Did not receive valid json!')
+        return 'Did not receive valid json!', 400
+    if 'uuid' not in content:
+        logger.warning('No motor specified - aborting all!')
+        mt = None
+    else:
+        mtnum = content['uuid']
+        if mtnum not in GPIOMgr.motors.keys():
+            logger.warning('Nonexistent motor uuid specified!')
+            return 'Nonexistent motor uuid specified!', 400
+        mt = GPIOMgr.motors[mtnum]
+    if mt:
+        mts = [mt]
+    else:
+        mts = GPIOMgr.motors.values()
+    for mt in mts:
+        state = mt.state
+        if state == Stepper.UNINITIALIZED:
+            logger.warning('Attempt to stop uninitialized motor %s', mt.uuid)
+        else:
+            logger.info('STOP for motor %s in state %s', mt.uuid, state)
+            mt.stop()
+    return 'OK'
+
+@app.route("/shutdown/", methods=['POST'])
+def web_shutdown():
+    sthelper()
+    return 'Goodbye...'
+
+def sthelper():
+    GPIOMgr.shutdown()
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func is None:
+        raise RuntimeError('Not running with the Werkzeug Server')
+    func()
 
 # Utility pages for debugging mostly
 @app.route("/config/")

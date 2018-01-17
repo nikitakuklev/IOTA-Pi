@@ -1,18 +1,19 @@
-import collections, sys, os, logging, time
+import collections, sys, os, logging, time, threading
 import Util
 
 logger = logging.getLogger(__name__)
 motors = collections.OrderedDict()
 config_raw = None
-lockout = True # Currently used for blocking actual output changes during testing
+lockout = False # Currently used for blocking actual output changes during testing
+
+movelock = threading.Lock()
 
 # Test if we are on actual RPi
 try:
     import RPi.GPIO as GPIO
+    isRPi = True
 except ImportError:
-    isRPi =  False
-else:
-    isRPi =  True
+    isRPi = False
 
 # Setup some constants
 if (isRPi):
@@ -36,13 +37,19 @@ def addMotor(mt):
 # Runs actual initialization for all declared motors
 def init_motors():
     if (isRPi):
-        # First, set all pins to input in the manager unless they are not in that function
+        # First, set all pins to defaults
         GPIO.setmode(GPIO.BCM)
         for pin in Util.BCM_PINS:
             if GPIO.gpio_function(pin) == GPIO.IN:
-                GPIO.setup(pin,GPIO.IN)
+                if pin in Util.BCM_PINS_PHIGH:
+                    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                elif pin in Util.BCM_SPECIAL:
+                    GPIO.setup(pin, GPIO.IN)
+                else:
+                    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
             else:
-                raise AttributeError("Pins not inputs during motor init")
+                logger.warning('Pin %d not in input mode during init', pin)
+                #raise AttributeError("Pins not inputs during motor init")
 
         # Run initialization
         for m in motors.values():
@@ -73,6 +80,26 @@ def set_pin_value(pin, state):
             raise AttributeError("Pin %d is not in output mode", pin)
     else:
         pass
+
+def set_mode_inputs(pins,pud):
+    for pin in pins:
+        assert pin in Util.BCM_PINS
+        #assert GPIO.gpio_function(pin) == GPIO.IN
+    if isRPi and not lockout:
+        logger.info('Setting pins %s to pullup state %s',pins,pud)
+        GPIO.setup(pins, GPIO.IN, pull_up_down = pud)
+    else:
+        logger.info('Fake setting pullups pins %s',pins)
+
+def set_mode_outputs(pins):
+    for pin in pins:
+        assert pin in Util.BCM_PINS
+        #assert GPIO.gpio_function(pin) == GPIO.IN
+    if isRPi and not lockout:
+        logger.info('Setting pins %s to outputs',pins)
+        GPIO.setup(pins, GPIO.OUT)
+    else:
+        logger.info('Fake setting pullups pins %s',pins)
 
 def toggle_pin_value(pin):
     assert pin in Util.BCM_PINS
@@ -121,8 +148,7 @@ def test1():
 
 
 def gpio_summary():
-    if (isRPi):
-        import RPi.GPIO as GPIO
+    if isRPi:
         GPIO.setmode(GPIO.BCM)
         summary = collections.OrderedDict()
         for idx, port in enumerate(Util.BCM_PINS):
@@ -142,3 +168,8 @@ def gpio_summary():
             summary[port] = {'pin_bcm': port, 'pin_pcb': Util.PCB_PINS[idx], 'state': Util.PORT_FUNC[usage],
                              'value': value}
         return summary
+
+
+def shutdown():
+    logger.info('GPIO cleanup on shutdown')
+    GPIO.cleanup()

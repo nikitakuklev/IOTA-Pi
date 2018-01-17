@@ -3,6 +3,9 @@ import logging
 # CONSTANTS
 # BCM RasPi3B pins that are valid for control assignment
 BCM_PINS = [2,3,4,17,27,22,10,9,11,5,6,13,19,26,14,15,18,23,24,25,8,7,12,16,20,21]
+# 2,3 have physical 1.8kOhms pullups
+BCM_SPECIAL = [2,3]
+BCM_PINS_PHIGH = [4,5,6,7,8,34,35,36] #these are pulled up on cold boot
 PCB_PINS = [3, 5, 7, 8, 10, 11, 12, 13, 15, 16, 18, 19, 21, 22, 23, 24, 26, 29, 31, 32, 33, 35, 36, 37, 38, 40]
 PORT_FUNC = {0: "GPIO.OUT", 1: "GPIO.IN", 40: "GPIO.SERIAL", 41: "GPIO.SPI", 42: "GPIO.I2C",
             43: "GPIO.HARD_PWM", -1: "GPIO.UNKNOWN"}

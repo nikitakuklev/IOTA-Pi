@@ -33,24 +33,31 @@ def load_config(config_path):
         sys.exit(4)
 
 def main():
-    parser = argparse.ArgumentParser(description="IOTAPi client software")
-    parser.add_argument("config", help="config file relative path")
-    parser.add_argument("-q","--quiet", help="disables all stdout logging (not file logging)", action="store_true")
-    args = parser.parse_args()
+    try:
+        parser = argparse.ArgumentParser(description="IOTAPi client software")
+        parser.add_argument("config", help="config file relative path")
+        parser.add_argument("-q","--quiet", help="disables all stdout logging (not file logging)", action="store_true")
+        args = parser.parse_args()
 
-    Util.init_logger(args.quiet)
-    logger.debug("Loggers initialized")
-    logger.debug("IOTAPI-client version %d.%d starting up",Util.VERSION_MAJOR,Util.VERSION_MINOR)
+        Util.init_logger(args.quiet)
+        logger.debug("Loggers initialized")
+        logger.debug("IOTAPI-client version %d.%d starting up",Util.VERSION_MAJOR,Util.VERSION_MINOR)
 
-    logger.debug("Loading config")
-    load_config(args.config)
+        logger.debug("Loading config")
+        load_config(args.config)
 
-    logger.info("Initializing motors")
-    GPIOMgr.init_motors()
+        logger.info("Initializing motors")
+        GPIOMgr.init_motors()
 
-    Webserver.init_flask()
-    logger.debug("Webserver initialized")
-    logger.info("Startup complete")
+        logger.debug("Starting webserver")
+        Webserver.init_flask()
+
+        logger.info("Webserver off?")
+        GPIOMgr.shutdown()
+
+    except Exception as e:
+        logger.exception(e)
+        GPIOMgr.shutdown()
 
 if __name__ == '__main__':
     main()
