@@ -74,6 +74,7 @@ def set_pin_value(pin, state):
         if GPIO.gpio_function(pin) == GPIO.OUT:
             if state == GPIO.LOW or state == GPIO.HIGH:
                 GPIO.output(pin, state)
+                #logger.debug('Pin %s to %s',pin,state)
             else:
                 raise AttributeError("State %s is not valid for pin %d", state, pin)
         else:
@@ -81,7 +82,8 @@ def set_pin_value(pin, state):
     else:
         pass
 
-def set_mode_inputs(pins,pud):
+
+def set_mode_inputs(pins, pud):
     for pin in pins:
         assert pin in Util.BCM_PINS
         #assert GPIO.gpio_function(pin) == GPIO.IN
@@ -91,13 +93,17 @@ def set_mode_inputs(pins,pud):
     else:
         logger.info('Fake setting pullups pins %s',pins)
 
-def set_mode_outputs(pins):
+
+def set_mode_outputs(pins, initial):
     for pin in pins:
         assert pin in Util.BCM_PINS
         #assert GPIO.gpio_function(pin) == GPIO.IN
     if isRPi and not lockout:
-        logger.info('Setting pins %s to outputs',pins)
-        GPIO.setup(pins, GPIO.OUT)
+        logger.info('Setting pins %s to outputs, initial %s',pins,initial)
+        if initial is not None:
+            GPIO.setup(pins, GPIO.OUT, initial=initial)
+        else:
+            GPIO.setup(pins, GPIO.OUT)
     else:
         logger.info('Fake setting pullups pins %s',pins)
 
@@ -171,5 +177,8 @@ def gpio_summary():
 
 
 def shutdown():
+    logger.info('Shutting down motors')
+    for mt in motors.values():
+        mt.shutdown()
     logger.info('GPIO cleanup on shutdown')
     GPIO.cleanup()

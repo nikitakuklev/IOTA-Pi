@@ -20,7 +20,7 @@ class Stepper:
     state = UNKNOWN
 
     def __init__(self, uuid, name, fname, Dr, St, En, Sl, LUp, LDn, LUpState, LDnState, ptime):
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__+'.'+str(uuid))
         try:
             #Sanity checks
             assert (all(x in Util.BCM_PINS for x in [Dr, St, En, Sl, LUp, LDn]))
@@ -47,7 +47,8 @@ class Stepper:
             self.threadon = False
 
             # Event indicating new command
-            self.ev = threading.Event()
+            self.stopevt = threading.Event()
+            self.doneevt = threading.Event()
             self.cmdq = queue.Queue(maxsize=100)
 
             self.logger.info('NEW Stepper (%s) aka (%s) with pins %d,%d,%d,%d,%d,%d (Dr,St,En,Sl,LUp,LDn)',
@@ -59,10 +60,13 @@ class Stepper:
     # Queries actual hardware for status (it can be non-default from previous runs for instance)
     def initialize(self, RPi=True):
         self.logger.info("Stepper %s - starting initialization", self.fname)
-        set1 = [self.PIN_DIR, self.PIN_STEP, self.PIN_ENABLE, self.PIN_SLEEP]
+        set1a = [self.PIN_DIR, self.PIN_STEP]
+        set1b = [self.PIN_ENABLE, self.PIN_SLEEP]
         set2 = [self.PIN_LIM_UP, self.PIN_LIM_DN]
-        # First read set 1
-        GPIOMgr.set_mode_inputs(set1,GPIOMgr.GPIO.PUD_OFF)
+        # Immediately set first group low
+        GPIOMgr.set_mode_outputs(set1a, GPIOMgr.GPIO.LOW)
+        # Read mode control pins
+        GPIOMgr.set_mode_inputs(set1b,GPIOMgr.GPIO.PUD_OFF)
         # Obtain current status
         if (RPi):
             self.direction = self._get_direction()
@@ -71,7 +75,6 @@ class Stepper:
             self.awake = self.is_awake()
             if not self.awake or not self.enabled:
                 self.logger.warning("New motor is either asleep or disabled")
-            self.state = IDLE
         else:
             self.direction = 1
             self.position = 0
@@ -79,9 +82,8 @@ class Stepper:
             self.awake = 1
             if not self.awake or not self.enabled:
                 self.logger.warning("New motor is either asleep or disabled")
-            self.state = IDLE
-        # Now set proper outputs
-        GPIOMgr.set_mode_outputs(set1)
+        # Now set other outputs high
+        GPIOMgr.set_mode_outputs(set1b, GPIOMgr.GPIO.HIGH)
         # Enable limit pullups
         GPIOMgr.set_mode_inputs(set2, GPIOMgr.GPIO.PUD_UP)
         self.logger.info("Motor %s initialized - dir %s, en %s, awk %s",
@@ -92,6 +94,8 @@ class Stepper:
         self.t = thread
         thread.setDaemon(False)
         thread.start()
+
+        self.state = IDLE
 
     # For steppers, we can reset live without any further actions
     def reinitialize(self):
@@ -107,14 +111,14 @@ class Stepper:
         self.logger.info('Thread %s starting up', self.uuid)
         self.threadon = True
         try:
-            while(self.threadon):
+            while self.threadon:
                 # Get next msg
                 try:
-                    msg = self.cmdq.get(block=True, timeout=0.5)
+                    msg = self.cmdq.get(block=True, timeout=0.1)
                 except queue.Empty:
                     pass
                 else:
-                    self.logger.info('Motor %s thread got command %s', self.uuid, msg)
+                    self.logger.info('M %s - thread command %s', self.uuid, msg)
                     if msg[0] == 'move':
                         if not self.checkInterlocks():
                             self.logger.warning('Motor %s interlock fail - move ignored!', self.uuid)
@@ -124,7 +128,7 @@ class Stepper:
 
                         # Acquire move lock to ensure only this motor will move
                         with GPIOMgr.movelock:
-                            self.logger.info("Motor %s move - %d steps in direction %d", self.uuid, numsteps, dir)
+                            self.logger.info("M %s - move %d steps in direction %d", self.uuid, numsteps, dir)
                             self.status = MOVING
                             if dir != self.direction:
                                 self._set_direction(dir)
@@ -136,23 +140,26 @@ class Stepper:
                             if numsteps == 0:
                                 self.logger.debug("Not moving since step number is 0")
                             else:
-                                stepdelay = 500
+                                stepdelay = 100
                                 self.moving = True
-                                self.status = MOVING
+                                self.state = MOVING
                                 self.logger.debug("Doing %d steps with delay of %d ms", numsteps, stepdelay)
                                 self._do_steps(numsteps,stepdelay)
                                 self.moving = False
-                                self.status = IDLE
+                                self.state = IDLE
                                 self.logger.debug("Motion finished")
+                            self.doneevt.set()
                     else:
                         continue
-        except KeyboardInterrupt as e:
-            self.logger.info('Thread %s KINT, shutting down',self.t.name)
+            self.logger.debug('Thread %s stopping gracefully!', self.t.name)
+        except (KeyboardInterrupt, SystemExit) as e:
+            self.logger.info('Thread %s shutting down gracefully',self.t.name)
             GPIOMgr.shutdown()
             self.threadon = False
         except Exception as e:
             self.logger.exception(e)
             self.threadon = False
+
 
     # # Rate limited stepping
     def _do_steps(self,numsteps,stepdelay):
@@ -163,11 +170,13 @@ class Stepper:
             self.logger.debug("Step %d of %d done", i+1, numsteps)
             # time.sleep(stepdelay)
             # We await stop for the full delay period
-            if self.ev.wait(timeout=stepdelay / 1000.0):
+            if self.stopevt.wait(timeout=stepdelay / 1000.0):
                 # Stop command received - clear things out
                 self.logger.debug("Stop command detected!")
                 self.cmdq.queue.clear()
+                self.stopevt.clear()
                 break
+
 
     # The main command that should be called by other functions
     def move(self, dir, numsteps, block=False):
@@ -178,47 +187,26 @@ class Stepper:
 
         # If queue is full, we reject command
         try:
-            self.cmdq.put_nowait(['move', dir, numsteps])
+            if self.moving and block:
+                return False #unsupported queue and block at same time
+            if self.moving:
+                self.logger.warning('Another move running - this command will be queued')
+                self.cmdq.put_nowait(['move', dir, numsteps])
+            elif block:
+                self.doneevt.clear()
+                self.cmdq.put_nowait(['move', dir, numsteps])
+                self.doneevt.wait()
+            else:
+                self.cmdq.put_nowait(['move', dir, numsteps])
         except queue.Full:
             return False
         else:
             return True
 
-    # def move(self, dir, numsteps, block=False):
-    #     if not self.checkInterlocks():
-    #         self.logger.warning('Motor %s interlock fail - move ignored!', self.uuid)
-    #         return False
-    #
-    #     if self.moving:
-    #         self.logger.warning('Motor %s is currently moving!', self.uuid)
-    #         # raise SystemError("Move ordered while another in progress")
-    #
-    #     # Final safety checks
-    #     assert (0 <= numsteps < 1000)
-    #     dir = int(dir)
-    #     numsteps = int(numsteps)
-    #
-    #     self.logger.info("Motor %s move - %d steps in direction %d", self.uuid, numsteps, dir)
-    #
-    #     if dir == Stepper.DIR_UP or dir == Stepper.DIR_DN:
-    #         if dir != self.direction:
-    #             self._set_direction(dir)
-    #             self.logger.debug("Direction changed")
-    #         else:
-    #             self.logger.debug("Direction already correct")
-    #     else:
-    #         raise ValueError("Invalid direction specified")
-    #     if numsteps == 0:
-    #         self.logger.debug("Not moving since step number is 0")
-    #     else:
-    #         self.logger.debug("Starting movement")
-    #         self.moving = True
-    #         self._do_steps(numsteps)
-    #         self.moving = False
 
     def stop(self):
         # Thread will detect this event and react
-        self.ev.set()
+        self.stopevt.set()
 
 
     def dumpState(self):
@@ -247,34 +235,41 @@ class Stepper:
     def checkInterlocks(self):
         # First check ESTOP
         if self.ESTOP:
-            self.logger.warning("Stepper %s - ESTOP interlock fail", self.fname)
+            self.logger.warning("M %s - ESTOP interlock fail", self.fname)
             return False
         # Then check both limits
         if self.is_lim_reached(self.DIR_UP):
-            self.logger.warning("Stepper %s - LIM UP fail", self.fname)
+            self.logger.warning("M %s - LIM UP fail", self.fname)
             return False
         if self.is_lim_reached(self.DIR_DN):
-            self.logger.warning("Stepper %s - LIM DN fail", self.fname)
+            self.logger.warning("M %s - LIM DN fail", self.fname)
             return False
         # Nothing else for now, but we should add other sanity checks...
-        self.logger.debug("Stepper %s - interlock check OK", self.fname)
+        self.logger.debug("M %s - interlock check OK", self.fname)
         return True
 
 
     def shutdown(self):
+        self.logger.info('M %s (%s) shutting down!', self.uuid, self.fname)
         if self.moving:
             self.stop()
         self.threadon = False
-        time.sleep(1.1)
+        time.sleep(0.6)
         if self.t.is_alive():
-            self.logger.error('Thread %s did not shut down in time!', self.t.name)
+            self.logger.error('M %s - thread %s did not shut down in time!', self.uuid, self.t.name)
             return False
         else:
+            #
             return True
 
     # Checks actual pin value for current direction
     def _get_direction(self):
         return GPIOMgr.get_pin_value(self.PIN_DIR)
+
+    # Setting direction pin
+    def _set_direction(self, dir):
+        GPIOMgr.set_pin_value(self.PIN_DIR, dir)
+        self.direction = dir
 
     # Checks actual pin value for current direction
     def is_enabled(self):
@@ -293,9 +288,6 @@ class Stepper:
         else:
             raise ValueError("Wrong limit check direction")
 
-    # Setting direction pin
-    def _set_direction(self, dir):
-        GPIOMgr.set_pin_value(self.PIN_DIR, dir)
-        self.direction = dir
+
 
 

@@ -6,7 +6,7 @@
       "friendly_name": "Stage_stepper_01",
       "uuid": 1,
       "step_size": 1,
-      "step_pulse_time": 100,
+      "step_pulse_time": 10,
       "pin_direction": 27,
       "pin_step": 22,
       "pin_enable": 5,

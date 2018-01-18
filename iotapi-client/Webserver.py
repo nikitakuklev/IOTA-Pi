@@ -8,7 +8,7 @@ app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
 def init_flask():
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080, use_reloader=False, debug=True, threaded=True)
 
 
 @app.route("/")
@@ -67,7 +67,7 @@ def web_motorview(motornum):
     else:
         return 'Motor UUID not found', 400
 
-@app.route("/move/", methods=['POST'])
+@app.route("/move/", methods=['POST'], strict_slashes=False)
 #@app.route("/motors/move/<motornum>", methods=['POST'])
 def web_motorcommand():
     logger.debug("Incoming move command %s", request.data)
@@ -93,52 +93,59 @@ def web_motorcommand():
         return 'Invalid move parameters specified!', 400
     state = mt.state
     logger.info('Move %s steps in dir %s ordered for motor %s in state %s', steps, direction, mt.uuid, state)
-    if mt.state != Stepper.IDLE:
-        logger.warning('Motor %s in invalid state %s', mt.uuid, state)
-    if 'block' in content and content['block']:
-        moveok = mt.move(direction, steps, block=True)
+    if not (mt.state == Stepper.IDLE or mt.state == Stepper.MOVING):
+        logger.warning('Motor %s in bad state %s', mt.uuid, mt.state)
+        return 'Motor {} in bad state {}'.format(mt.uuid, mt.state), 500
     else:
-        moveok = mt.move(direction, steps)
-    return str(moveok)
+        if 'block' in content and content['block'] == '1':
+            moveok = mt.move(direction, steps, block=True)
+        else:
+            moveok = mt.move(direction, steps)
+        return str(moveok)
 
 
-@app.route("/stop/", methods=['POST'])
-#@app.route("/motors/stop")
+@app.route("/stop/", methods=['POST'], strict_slashes=False)
 def web_motorabort():
     logger.info("Incoming abort command %s", request.data)
     content = request.get_json(force=False, silent=True)
     if not request.is_json or content is None:
-        logger.warning('Did not receive valid json!')
-        return 'Did not receive valid json!', 400
-    if 'uuid' not in content:
-        logger.warning('No motor specified - aborting all!')
+        logger.warning('Did not receive valid json - aborting all')
         mt = None
     else:
-        mtnum = content['uuid']
-        if mtnum not in GPIOMgr.motors.keys():
-            logger.warning('Nonexistent motor uuid specified!')
-            return 'Nonexistent motor uuid specified!', 400
-        mt = GPIOMgr.motors[mtnum]
+        if 'uuid' not in content:
+            logger.warning('No motor specified - aborting all!')
+            mt = None
+        else:
+            mtnum = content['uuid']
+            if mtnum not in GPIOMgr.motors.keys():
+                logger.warning('Nonexistent motor uuid specified!')
+                return 'Nonexistent motor uuid specified!', 400
+            mt = GPIOMgr.motors[mtnum]
     if mt:
         mts = [mt]
     else:
         mts = GPIOMgr.motors.values()
+    results = {}
     for mt in mts:
         state = mt.state
         if state == Stepper.UNINITIALIZED:
             logger.warning('Attempt to stop uninitialized motor %s', mt.uuid)
+            results[mt.uuid] = 'FAIL'
+        if state == Stepper.IDLE:
+            logger.warning('Attempt to stop idle motor %s', mt.uuid)
+            results[mt.uuid] = 'ALREADYIDLE'
         else:
             logger.info('STOP for motor %s in state %s', mt.uuid, state)
             mt.stop()
-    return 'OK'
+            results[mt.uuid] = 'OK'
+    return jsonify(results)
 
-@app.route("/shutdown/", methods=['POST'])
+@app.route("/shutdown/", methods=['POST'], strict_slashes=False)
 def web_shutdown():
-    sthelper()
+    shutdownfunc()
     return 'Goodbye...'
 
-def sthelper():
-    GPIOMgr.shutdown()
+def shutdownfunc():
     func = request.environ.get('werkzeug.server.shutdown')
     if func is None:
         raise RuntimeError('Not running with the Werkzeug Server')

@@ -2,6 +2,7 @@ import argparse
 import logging.config
 import json
 import sys
+import signal
 
 import Util, GPIOMgr
 import Webserver
@@ -39,6 +40,9 @@ def main():
         parser.add_argument("-q","--quiet", help="disables all stdout logging (not file logging)", action="store_true")
         args = parser.parse_args()
 
+        #signal.signal(signal.SIGINT, shutdown)
+        #signal.signal(signal.SIGTERM, shutdown)
+
         Util.init_logger(args.quiet)
         logger.debug("Loggers initialized")
         logger.debug("IOTAPI-client version %d.%d starting up",Util.VERSION_MAJOR,Util.VERSION_MINOR)
@@ -52,12 +56,19 @@ def main():
         logger.debug("Starting webserver")
         Webserver.init_flask()
 
-        logger.info("Webserver off?")
-        GPIOMgr.shutdown()
+        logger.info("Webserver app done, shutting down other things")
+        shutdown(-1, None)
+
+        logger.info("Goodbye...")
 
     except Exception as e:
         logger.exception(e)
         GPIOMgr.shutdown()
+
+def shutdown(signum, frame):
+    # TODO - probably fake local request to flask to get shutdown function with context
+    logger.info('Received signal %s - shutting down', signum)
+    GPIOMgr.shutdown()
 
 if __name__ == '__main__':
     main()
