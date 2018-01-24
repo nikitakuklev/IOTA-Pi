@@ -2,12 +2,13 @@ import logging, time, threading, queue
 import Util
 import GPIOMgr
 
+DISABLED = 50
 IDLE = 100
 MOVING = 200
 ERROR = 300
 UNKNOWN = -100
 UNINITIALIZED = -50
-STATES_STR = {100: 'IDLE', 200: 'MOVING', 300: 'ERROR', -100: 'UNKNOWN', -50: 'UNINITIALIZED'}
+STATES_STR = {50: 'DISABLED', 100: 'IDLE', 200: 'MOVING', 300: 'ERROR', -100: 'UNKNOWN', -50: 'UNINITIALIZED'}
 
 
 class Stepper:
@@ -95,7 +96,7 @@ class Stepper:
         thread.setDaemon(False)
         thread.start()
 
-        self.state = IDLE
+        self.state = DISABLED
 
     # For steppers, we can reset live without any further actions
     def reinitialize(self):
@@ -120,7 +121,7 @@ class Stepper:
                 else:
                     self.logger.info('M %s - thread command %s', self.uuid, msg)
                     if msg[0] == 'move':
-                        if not self.checkInterlocks():
+                        if not self.check_interlocks():
                             self.logger.warning('Motor %s interlock fail - move ignored!', self.uuid)
                             continue
                         dir = msg[1]
@@ -140,15 +141,26 @@ class Stepper:
                             if numsteps == 0:
                                 self.logger.debug("Not moving since step number is 0")
                             else:
-                                stepdelay = 100
+                                stepdelay = 50
+                                if self.state == DISABLED:
+                                    self._enable()
                                 self.moving = True
                                 self.state = MOVING
                                 self.logger.debug("Doing %d steps with delay of %d ms", numsteps, stepdelay)
                                 self._do_steps(numsteps,stepdelay)
                                 self.moving = False
                                 self.state = IDLE
+                                #GPIOMgr.set_pin_value(self.PIN_ENABLE, GPIOMgr.GPIO.HIGH)
                                 self.logger.debug("Motion finished")
                             self.doneevt.set()
+                    elif msg[0] == 'enable':
+                        if not self.check_interlocks():
+                            self.logger.warning('Motor %s interlock fail - enable ignored!', self.uuid)
+                            continue
+
+                        # Acquire move lock to ensure only this motor will move
+                        with GPIOMgr.movelock:
+                            self._enable()
                     else:
                         continue
             self.logger.debug('Thread %s stopping gracefully!', self.t.name)
@@ -177,6 +189,12 @@ class Stepper:
                 self.stopevt.clear()
                 break
 
+    def _enable(self):
+        self.logger.info("M %s - enabling", self.uuid)
+        GPIOMgr.set_pin_value(self.PIN_ENABLE, GPIOMgr.GPIO.LOW)
+        self.state = IDLE
+        self.logger.debug("Done!")
+
 
     # The main command that should be called by other functions
     def move(self, dir, numsteps, block=False):
@@ -198,6 +216,20 @@ class Stepper:
                 self.doneevt.wait()
             else:
                 self.cmdq.put_nowait(['move', dir, numsteps])
+        except queue.Full:
+            return False
+        else:
+            return True
+
+
+    # External enable function
+    def enable(self):
+        # Sanity checks
+        if (self.state == IDLE):
+            return True
+        # If queue is full, we reject command
+        try:
+            self.cmdq.put_nowait(['enable'])
         except queue.Full:
             return False
         else:
@@ -229,10 +261,13 @@ class Stepper:
                 'QueueSize': self.cmdq.qsize()
              }
         return results
+#
 
-
-    # Checks if there are any interlocks active
-    def checkInterlocks(self):
+    def check_interlocks(self):
+        """
+        Checks if any of interlocks are active
+        :return:
+        """
         # First check ESTOP
         if self.ESTOP:
             self.logger.warning("M %s - ESTOP interlock fail", self.fname)
@@ -248,8 +283,10 @@ class Stepper:
         self.logger.debug("M %s - interlock check OK", self.fname)
         return True
 
-
     def shutdown(self):
+        """
+        Shuts down motor, waiting to ensure thread is done
+        """
         self.logger.info('M %s (%s) shutting down!', self.uuid, self.fname)
         if self.moving:
             self.stop()
@@ -261,6 +298,12 @@ class Stepper:
         else:
             #
             return True
+
+    def names(self):
+        """Gets both names in 'id (friendly name)' format
+        :return:
+        """
+        return '{} ({})'.format(self.uuid, self.fname)
 
     # Checks actual pin value for current direction
     def _get_direction(self):

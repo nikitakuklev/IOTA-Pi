@@ -7,6 +7,7 @@ app = Flask(__name__)
 # Logger
 logger = logging.getLogger(__name__)
 
+
 def init_flask():
     app.run(host='0.0.0.0', port=8080, use_reloader=False, debug=True, threaded=True)
 
@@ -38,7 +39,7 @@ def getExternalIP():
         s.connect(('10.255.255.255', 1))
         return s.getsockname()[0]
     except:
-        return'127.0.0.1 (can\'t find public one!)'
+        return '127.0.0.1 (can\'t find public one!)'
     finally:
         s.close()
 
@@ -55,7 +56,7 @@ def web_motorview(motornum):
     except:
         return 'Invalid motor number', 400
     results = {}
-    #print(list(GPIOMgr.motors.keys()))
+    # print(list(GPIOMgr.motors.keys()))
     logger.debug('Motor page accessed with parameter %s', motornum)
     if motornum == -1:
         for uuid, mt in GPIOMgr.motors.items():
@@ -67,9 +68,10 @@ def web_motorview(motornum):
     else:
         return 'Motor UUID not found', 400
 
+
 @app.route("/move/", methods=['POST'], strict_slashes=False)
-#@app.route("/motors/move/<motornum>", methods=['POST'])
-def web_motorcommand():
+# @app.route("/motors/move/<motornum>", methods=['POST'])
+def web_motor_command_move():
     logger.debug("Incoming move command %s", request.data)
     content = request.get_json(force=False, silent=True)
     if not request.is_json or content is None:
@@ -88,13 +90,14 @@ def web_motorcommand():
         return 'No valid move parameters specified!', 400
     direction = int(content['dir'])
     steps = int(content['steps'])
-    if not (0 <= steps < 1000) or direction not in [0,1]:
+    if not (0 <= steps < 1000) or direction not in [0, 1]:
         logger.warning('Invalid move parameters specified!')
         return 'Invalid move parameters specified!', 400
     state = mt.state
-    logger.info('Move %s steps in dir %s ordered for motor %s in state %s', steps, direction, mt.uuid, state)
+    logger.info('M %s - move %s steps in dir %s ordered in state %s',
+                mt.uuid, steps, direction, state)
     if not (mt.state == Stepper.IDLE or mt.state == Stepper.MOVING):
-        logger.warning('Motor %s in bad state %s', mt.uuid, mt.state)
+        logger.warning('M %s - in bad state %s', mt.uuid, mt.state)
         return 'Motor {} in bad state {}'.format(mt.uuid, mt.state), 500
     else:
         if 'block' in content and content['block'] == '1':
@@ -104,8 +107,34 @@ def web_motorcommand():
         return str(moveok)
 
 
+@app.route("/enable/", methods=['POST'], strict_slashes=False)
+# @app.route("/motors/move/<motornum>", methods=['POST'])
+def web_motor_command_enable():
+    logger.debug("Incoming enable command %s", request.data)
+    content = request.get_json(force=False, silent=True)
+    if not request.is_json or content is None:
+        logger.warning('Did not receive valid json!')
+        return 'Did not receive valid json!', 400
+    if 'uuid' not in content:
+        logger.warning('No motor specified!')
+        return 'No motor specified!', 400
+    mtnum = content['uuid']
+    if mtnum not in GPIOMgr.motors.keys():
+        logger.warning('Nonexistent motor uuid specified!')
+        return 'Nonexistent motor uuid specified!', 400
+    mt = GPIOMgr.motors[mtnum]
+    state = mt.state
+    logger.info('M %s - enable ordered in state %s', mt.uuid, state)
+    if not (mt.state == Stepper.DISABLED):
+        logger.warning('M %s - in bad state %s', mt.uuid, mt.state)
+        return 'Motor {} in bad state {}'.format(mt.uuid, mt.state), 500
+    else:
+        mt.enable()
+        return 'OK'
+
+
 @app.route("/stop/", methods=['POST'], strict_slashes=False)
-def web_motorabort():
+def web_motor_abort():
     logger.info("Incoming abort command %s", request.data)
     content = request.get_json(force=False, silent=True)
     if not request.is_json or content is None:
@@ -121,39 +150,42 @@ def web_motorabort():
                 logger.warning('Nonexistent motor uuid specified!')
                 return 'Nonexistent motor uuid specified!', 400
             mt = GPIOMgr.motors[mtnum]
-    if mt:
-        mts = [mt]
-    else:
-        mts = GPIOMgr.motors.values()
+    mts = [mt] if mt else GPIOMgr.motors.values()
     results = {}
     for mt in mts:
         state = mt.state
         if state == Stepper.UNINITIALIZED:
-            logger.warning('Attempt to stop uninitialized motor %s', mt.uuid)
-            results[mt.uuid] = 'FAIL'
-        if state == Stepper.IDLE:
-            logger.warning('Attempt to stop idle motor %s', mt.uuid)
-            results[mt.uuid] = 'ALREADYIDLE'
+            logger.warning('M %s - attempt to stop while UNINITIALIZED', mt.uuid)
+            results[mt.uuid] = 'Failed, uninitialized!'
+        elif state == Stepper.IDLE:
+            logger.warning('M %s - attempt to stop while IDLE', mt.uuid)
+            results[mt.uuid] = 'Failed, already idle!'
+        elif state == Stepper.DISABLED:
+            logger.warning('M %s - attempt to stop while DISABLED', mt.uuid)
+            results[mt.uuid] = 'Failed, already disabled!'
         else:
             logger.info('STOP for motor %s in state %s', mt.uuid, state)
             mt.stop()
             results[mt.uuid] = 'OK'
     return jsonify(results)
 
+
 @app.route("/shutdown/", methods=['POST'], strict_slashes=False)
 def web_shutdown():
-    shutdownfunc()
+    shutdown()
     return 'Goodbye...'
 
-def shutdownfunc():
+
+def shutdown():
     func = request.environ.get('werkzeug.server.shutdown')
     if func is None:
         raise RuntimeError('Not running with the Werkzeug Server')
     func()
 
+
 # Utility pages for debugging mostly
 @app.route("/config/")
-def web_configview():
+def web_dump_config():
     """
     Spit out current config
     """
