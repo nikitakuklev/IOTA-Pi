@@ -22,7 +22,9 @@ def load_config(config_path):
                 for k,motor in config['motors'].items():
                     mt = Stepper(motor['uuid'],k,motor['friendly_name'],motor['pin_direction'],motor['pin_step'],
                                  motor['pin_enable'],motor['pin_sleep'],motor['pin_lim_up'],motor['pin_lim_dn'],
-                                 motor['lim_up_state'],motor['lim_dn_state'],motor['step_pulse_time'])
+                                 motor['lim_up_state'],motor['lim_dn_state'],motor['step_size'],
+                                 motor['step_pulse_time'],motor['step_delay_time'],
+                                 motor['autoenable'],motor['autodisable'])
                     GPIOMgr.addMotor(mt)
             else:
                 logger.warning('No motors found in config file!')

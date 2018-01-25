@@ -20,7 +20,7 @@ class Stepper:
     position = -1
     state = UNKNOWN
 
-    def __init__(self, uuid, name, fname, Dr, St, En, Sl, LUp, LDn, LUpState, LDnState, ptime):
+    def __init__(self, uuid, name, fname, Dr, St, En, Sl, LUp, LDn, LUpState, LDnState, st_size, ptime, st_dtime, aen, adis):
         self.logger = logging.getLogger(__name__+'.'+str(uuid))
         try:
             #Sanity checks
@@ -31,7 +31,7 @@ class Stepper:
             # Basic parameters
             self.uuid = uuid
             self.name = name
-            self.fname = fname
+            self.full_name = fname
             self.PIN_DIR = Dr
             self.PIN_STEP = St
             self.PIN_ENABLE = En
@@ -40,12 +40,17 @@ class Stepper:
             self.PIN_LIM_DN = LDn
             self.LIM_UP_HIT = LUpState
             self.LIM_DN_HIT = LDnState
+            self.step_size = st_size
             # Converting pulse time to s (below 1ms is not possible without RT kernel or C bindings)
-            self.pulsetime = ptime/1000.0
+            self.pulse_time = ptime / 1000.0
+            self.step_delay = st_dtime / 1000.0
+
+            self.auto_enable = bool(aen)
+            self.auto_disable = bool(adis)
 
             self.state = UNINITIALIZED
             self.moving = False
-            self.threadon = False
+            self.thread_on = False
 
             # Event indicating new command
             self.stopevt = threading.Event()
@@ -60,7 +65,7 @@ class Stepper:
 
     # Queries actual hardware for status (it can be non-default from previous runs for instance)
     def initialize(self, RPi=True):
-        self.logger.info("Stepper %s - starting initialization", self.fname)
+        self.logger.info("Stepper %s - starting initialization", self.full_name)
         set1a = [self.PIN_DIR, self.PIN_STEP]
         set1b = [self.PIN_ENABLE, self.PIN_SLEEP]
         set2 = [self.PIN_LIM_UP, self.PIN_LIM_DN]
@@ -88,7 +93,7 @@ class Stepper:
         # Enable limit pullups
         GPIOMgr.set_mode_inputs(set2, GPIOMgr.GPIO.PUD_UP)
         self.logger.info("Motor %s initialized - dir %s, en %s, awk %s",
-                             self.fname, self.direction, self.enabled, self.awake)
+                         self.full_name, self.direction, self.enabled, self.awake)
 
         # Create and start thread
         thread = threading.Thread(name='mt_thr_{}'.format(self.uuid), target=self.control_thread, args=())
@@ -106,22 +111,22 @@ class Stepper:
 
     def control_thread(self):
         """
-        Individual thread responsible for executing commands
+        Independent thread responsible for executing motor commands
         :return:
         """
         self.logger.info('Thread %s starting up', self.uuid)
-        self.threadon = True
+        self.thread_on = True
         try:
-            while self.threadon:
+            while self.thread_on:
                 # Get next msg
                 try:
-                    msg = self.cmdq.get(block=True, timeout=0.1)
+                    msg = self.cmdq.get(block=True, timeout=0.05)
                 except queue.Empty:
                     pass
                 else:
                     self.logger.info('M %s - thread command %s', self.uuid, msg)
                     if msg[0] == 'move':
-                        if not self.check_interlocks():
+                        if self.check_interlocks():
                             self.logger.warning('Motor %s interlock fail - move ignored!', self.uuid)
                             continue
                         dir = msg[1]
@@ -130,55 +135,62 @@ class Stepper:
                         # Acquire move lock to ensure only this motor will move
                         with GPIOMgr.movelock:
                             self.logger.info("M %s - move %d steps in direction %d", self.uuid, numsteps, dir)
-                            self.status = MOVING
                             if dir != self.direction:
+                                self.state = MOVING
                                 self._set_direction(dir)
+                                self.state = IDLE
                                 self.logger.debug("Direction changed to %s", dir)
                             else:
                                 self.logger.debug("Direction already correct")
-                            self.status = IDLE
 
                             if numsteps == 0:
                                 self.logger.debug("Not moving since step number is 0")
                             else:
-                                stepdelay = 50
                                 if self.state == DISABLED:
-                                    self._enable()
-                                self.moving = True
+                                    if self.auto_enable:
+                                        self._enable_direct()
+                                    else:
+                                        self.logger.warning('M %s - not enabled, ignoring move command!', self.uuid)
+                                        continue
                                 self.state = MOVING
-                                self.logger.debug("Doing %d steps with delay of %d ms", numsteps, stepdelay)
-                                self._do_steps(numsteps,stepdelay)
-                                self.moving = False
+                                self.logger.debug("Doing %d steps with delay of %d ms", numsteps, self.step_delay)
+                                try:
+                                    result = self._do_steps(numsteps, self.step_delay)
+                                except MoveException as e:
+                                    self.logger.warning("Interlock |%s| triggered during move!", e)
+                                    result = -2
+                                self.logger.info("Motion finished, result code: %s", result)
                                 self.state = IDLE
-                                #GPIOMgr.set_pin_value(self.PIN_ENABLE, GPIOMgr.GPIO.HIGH)
-                                self.logger.debug("Motion finished")
+                            if self.auto_disable:
+                                self._disable_direct()
                             self.doneevt.set()
                     elif msg[0] == 'enable':
                         if not self.check_interlocks():
-                            self.logger.warning('Motor %s interlock fail - enable ignored!', self.uuid)
+                            self.logger.warning('M %s - interlock fail, enable ignored!', self.uuid)
                             continue
 
-                        # Acquire move lock to ensure only this motor will move
+                        # Acquire move lock
                         with GPIOMgr.movelock:
-                            self._enable()
+                            self._enable_direct()
                     else:
                         continue
             self.logger.debug('Thread %s stopping gracefully!', self.t.name)
         except (KeyboardInterrupt, SystemExit) as e:
             self.logger.info('Thread %s shutting down gracefully',self.t.name)
             GPIOMgr.shutdown()
-            self.threadon = False
+            self.thread_on = False
         except Exception as e:
             self.logger.exception(e)
-            self.threadon = False
+            self.thread_on = False
 
 
-    # # Rate limited stepping
-    def _do_steps(self,numsteps,stepdelay):
+    def _do_steps(self, numsteps, stepdelay):
         # Rate limited stepping
         for i in range(numsteps):
-            GPIOMgr.pulse_pin(self.PIN_STEP, self.pulsetime)
+            self.check_interlocks()
+            GPIOMgr.pulse_pin(self.PIN_STEP, self.pulse_time)
             self.position += 1
+            self.check_interlocks()
             self.logger.debug("Step %d of %d done", i+1, numsteps)
             # time.sleep(stepdelay)
             # We await stop for the full delay period
@@ -187,17 +199,60 @@ class Stepper:
                 self.logger.debug("Stop command detected!")
                 self.cmdq.queue.clear()
                 self.stopevt.clear()
-                break
+                return -1
+        return 0
 
-    def _enable(self):
+    def check_interlocks(self, raise_exc=False):
+        """
+        Checks if any of interlocks are active
+        :return:
+        """
+        # First check ESTOP
+        if self.ESTOP:
+            self.logger.warning("M %s - ESTOP interlock fail", self.full_name)
+            if raise_exc:
+                raise MoveException("ESTOP")
+            else:
+                return 1
+        # Then check both limits
+        if self.is_lim_reached(self.DIR_UP):
+            self.logger.warning("M %s - LIM UP fail", self.full_name)
+            if raise_exc:
+                raise MoveException("UP")
+            else:
+                return 2
+        if self.is_lim_reached(self.DIR_DN):
+            self.logger.warning("M %s - LIM DN fail", self.full_name)
+            if raise_exc:
+                raise MoveException("DN")
+            else:
+                return 3
+        # Nothing else for now, but we should add other sanity checks...
+        self.logger.debug("M %s - interlock check OK", self.full_name)
+        return 0
+
+    def _enable_direct(self):
         self.logger.info("M %s - enabling", self.uuid)
         GPIOMgr.set_pin_value(self.PIN_ENABLE, GPIOMgr.GPIO.LOW)
         self.state = IDLE
         self.logger.debug("Done!")
 
 
-    # The main command that should be called by other functions
+    def _disable_direct(self):
+        self.logger.info("M %s - disabling", self.uuid)
+        GPIOMgr.set_pin_value(self.PIN_ENABLE, GPIOMgr.GPIO.HIGH)
+        self.state = DISABLED
+        self.logger.debug("Done!")
+
+
     def move(self, dir, numsteps, block=False):
+        """
+        Performs motor steps
+        :param dir:
+        :param numsteps:
+        :param block:
+        :return:
+        """
         # Final safety checks
         numsteps = int(numsteps)
         assert (0 <= numsteps < 1000)
@@ -222,75 +277,72 @@ class Stepper:
             return True
 
 
-    # External enable function
     def enable(self):
-        # Sanity checks
-        if (self.state == IDLE):
-            return True
-        # If queue is full, we reject command
-        try:
-            self.cmdq.put_nowait(['enable'])
-        except queue.Full:
+        """
+        Queues enabling of the motor
+
+        :return: Result of operation
+        """
+        # Sanity checks - should already be filtered by webserver...
+        if self.state == IDLE:
+            self.logger.warning('Attempt to enable IDLE motor - BAD')
             return False
+
+        # If queue is not empty, reject command (no queue for enabling)
+        if self.cmdq.empty():
+            try:
+                self.cmdq.put_nowait(['enable'])
+                return True
+            except queue.Full:
+                return False
         else:
-            return True
+            return False
 
 
     def stop(self):
+        """
+        Sets stop event indicator for the running thread
+
+        :return:
+        """
         # Thread will detect this event and react
-        self.stopevt.set()
+        if self.state == MOVING:
+            self.stopevt.set()
+            return True
+        else:
+            self.logger.warning('Attempt to stop non-moving motor')
+            return False
 
 
-    def dumpState(self):
+    def dump_state(self):
         results = {}
         if self.state == UNKNOWN or self.state == UNINITIALIZED:
             results = {
-                'Fname': self.fname,
+                'Fname': self.full_name,
                 'State': self.state,
                 'StateStr': STATES_STR[self.state],
-                'ThreadOn': self.threadon
+                'ThreadOn': self.thread_on
             }
         else:
             results = {
-                'Fname': self.fname,
+                'Fname': self.full_name,
                 'State': self.state,
                 'StateStr': STATES_STR[self.state],
                 'Position': self.position,
                 'Direction': self.direction,
-                'ThreadOn': self.threadon,
+                'ThreadOn': self.thread_on,
                 'QueueSize': self.cmdq.qsize()
              }
         return results
 #
-
-    def check_interlocks(self):
-        """
-        Checks if any of interlocks are active
-        :return:
-        """
-        # First check ESTOP
-        if self.ESTOP:
-            self.logger.warning("M %s - ESTOP interlock fail", self.fname)
-            return False
-        # Then check both limits
-        if self.is_lim_reached(self.DIR_UP):
-            self.logger.warning("M %s - LIM UP fail", self.fname)
-            return False
-        if self.is_lim_reached(self.DIR_DN):
-            self.logger.warning("M %s - LIM DN fail", self.fname)
-            return False
-        # Nothing else for now, but we should add other sanity checks...
-        self.logger.debug("M %s - interlock check OK", self.fname)
-        return True
-
     def shutdown(self):
         """
         Shuts down motor, waiting to ensure thread is done
         """
-        self.logger.info('M %s (%s) shutting down!', self.uuid, self.fname)
+        self.logger.info('M %s (%s) shutting down!', self.uuid, self.full_name)
         if self.moving:
             self.stop()
-        self.threadon = False
+        self.thread_on = False
         time.sleep(0.6)
         if self.t.is_alive():
             self.logger.error('M %s - thread %s did not shut down in time!', self.uuid, self.t.name)
@@ -303,7 +355,7 @@ class Stepper:
         """Gets both names in 'id (friendly name)' format
         :return:
         """
-        return '{} ({})'.format(self.uuid, self.fname)
+        return '{} ({})'.format(self.uuid, self.full_name)
 
     # Checks actual pin value for current direction
     def _get_direction(self):
@@ -331,6 +383,5 @@ class Stepper:
         else:
             raise ValueError("Wrong limit check direction")
 
-
-
-
+class MoveException(Exception):
+    pass

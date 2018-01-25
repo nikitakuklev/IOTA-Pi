@@ -1,3 +1,0 @@
-ansible_host: 10.10.10.237
-# it really doesn't matter if any passwords are published, since we are on isolated local network
-ansible_ssh_pass: iotapi01

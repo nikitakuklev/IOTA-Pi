@@ -60,17 +60,16 @@ def web_motorview(motornum):
     logger.debug('Motor page accessed with parameter %s', motornum)
     if motornum == -1:
         for uuid, mt in GPIOMgr.motors.items():
-            results[uuid] = mt.dumpState()
+            results[uuid] = mt.dump_state()
         return jsonify(results)
     elif motornum in GPIOMgr.motors.keys():
-        results[motornum] = GPIOMgr.motors[motornum].dumpState()
+        results[motornum] = GPIOMgr.motors[motornum].dump_state()
         return jsonify(results)
     else:
         return 'Motor UUID not found', 400
 
 
 @app.route("/move/", methods=['POST'], strict_slashes=False)
-# @app.route("/motors/move/<motornum>", methods=['POST'])
 def web_motor_command_move():
     logger.debug("Incoming move command %s", request.data)
     content = request.get_json(force=False, silent=True)
@@ -84,7 +83,7 @@ def web_motor_command_move():
     if mtnum not in GPIOMgr.motors.keys():
         logger.warning('Nonexistent motor uuid specified!')
         return 'Nonexistent motor uuid specified!', 400
-    mt = GPIOMgr.motors[mtnum]
+    motor = GPIOMgr.motors[mtnum]
     if 'dir' not in content or 'steps' not in content:
         logger.warning('No valid move parameters specified!')
         return 'No valid move parameters specified!', 400
@@ -93,24 +92,22 @@ def web_motor_command_move():
     if not (0 <= steps < 1000) or direction not in [0, 1]:
         logger.warning('Invalid move parameters specified!')
         return 'Invalid move parameters specified!', 400
-    state = mt.state
     logger.info('M %s - move %s steps in dir %s ordered in state %s',
-                mt.uuid, steps, direction, state)
-    if not (mt.state == Stepper.IDLE or mt.state == Stepper.MOVING):
-        logger.warning('M %s - in bad state %s', mt.uuid, mt.state)
-        return 'Motor {} in bad state {}'.format(mt.uuid, mt.state), 500
+                motor.uuid, steps, direction, motor.state)
+    if not (motor.state == Stepper.IDLE or motor.state == Stepper.MOVING):
+        logger.warning('M %s - in bad state %s', motor.uuid, motor.state)
+        return 'Motor {} in bad state {}'.format(motor.uuid, motor.state), 500
     else:
         if 'block' in content and content['block'] == '1':
-            moveok = mt.move(direction, steps, block=True)
+            moveok = motor.move(direction, steps, block=True)
         else:
-            moveok = mt.move(direction, steps)
+            moveok = motor.move(direction, steps)
         return str(moveok)
 
 
 @app.route("/enable/", methods=['POST'], strict_slashes=False)
-# @app.route("/motors/move/<motornum>", methods=['POST'])
 def web_motor_command_enable():
-    logger.debug("Incoming enable command %s", request.data)
+    logger.debug("Incoming enable command: %s", request.data)
     content = request.get_json(force=False, silent=True)
     if not request.is_json or content is None:
         logger.warning('Did not receive valid json!')
@@ -122,20 +119,22 @@ def web_motor_command_enable():
     if mtnum not in GPIOMgr.motors.keys():
         logger.warning('Nonexistent motor uuid specified!')
         return 'Nonexistent motor uuid specified!', 400
-    mt = GPIOMgr.motors[mtnum]
-    state = mt.state
-    logger.info('M %s - enable ordered in state %s', mt.uuid, state)
-    if not (mt.state == Stepper.DISABLED):
-        logger.warning('M %s - in bad state %s', mt.uuid, mt.state)
-        return 'Motor {} in bad state {}'.format(mt.uuid, mt.state), 500
+    motor = GPIOMgr.motors[mtnum]
+    logger.info('M %s - enable ordered in state %s', motor.uuid, motor.state)
+    if not motor.state == Stepper.DISABLED:
+        logger.warning('M %s - in bad state %s', motor.uuid, motor.state)
+        return 'Motor {} in bad state {}'.format(motor.uuid, motor.state), 500
     else:
-        mt.enable()
-        return 'OK'
+        return 'OK' if motor.enable() else 'FAIL'
 
 
 @app.route("/stop/", methods=['POST'], strict_slashes=False)
 def web_motor_abort():
-    logger.info("Incoming abort command %s", request.data)
+    """
+    Stops current and all queued actions, for all motors unless specified otherwise
+    :return:
+    """
+    logger.info("Incoming abort command: %s", request.data)
     content = request.get_json(force=False, silent=True)
     if not request.is_json or content is None:
         logger.warning('Did not receive valid json - aborting all')
@@ -165,8 +164,7 @@ def web_motor_abort():
             results[mt.uuid] = 'Failed, already disabled!'
         else:
             logger.info('STOP for motor %s in state %s', mt.uuid, state)
-            mt.stop()
-            results[mt.uuid] = 'OK'
+            results[mt.uuid] = 'OK' if mt.stop() else 'FAIL'
     return jsonify(results)
 
 

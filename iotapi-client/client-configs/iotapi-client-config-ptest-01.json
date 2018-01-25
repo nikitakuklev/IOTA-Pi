@@ -17,7 +17,7 @@
       "step_pulse_time": 5,
       "step_delay_time": 30,
       "autoenable": 1,
-      "autodisable": 1
+      "autodisable": 0
     }
   }
 }
