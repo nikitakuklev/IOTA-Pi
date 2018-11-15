@@ -37,7 +37,7 @@ def init_logger(is_quiet):
             "disable_existing_loggers": False,
             "formatters": {
                 "simple": {
-                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                    "format": "%(asctime)s - %(levelname)s:%(lineno)d:%(name)s:%(threadName)s - %(message)s"
                 }
             },
 
@@ -135,3 +135,4 @@ def init_logger(is_quiet):
                 "handlers": ["info_file_handler", "error_file_handler"]
             }
         })
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)

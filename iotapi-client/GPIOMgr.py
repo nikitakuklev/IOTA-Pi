@@ -28,11 +28,12 @@ else:
 # Note that motors are disabled on creation, so this can be done after Stepper object is made
 def addMotor(mt):
     for mtprev in motors.values():
-        if mtprev.uuid == mt.uuid or mtprev.name == mt.name or mtprev.fname == mt.fname:
+        if mtprev.uuid == mt.uuid or mtprev.name == mt.name or mtprev.full_name == mt.full_name:
             raise ValueError("Attempt to add a motor with repeat name attributes!")
 
     motors[mt.uuid] = mt
-    logger.debug("Added motor %s (%s) to the control list", mt.uuid, mt.fname)
+    logger.debug("Added motor %s (%s) to the control list", mt.uuid, mt.full_name)
+
 
 # Runs actual initialization for all declared motors
 def init_motors():
@@ -59,6 +60,7 @@ def init_motors():
         for m in motors.values():
             m.initialize(RPi=False)
 
+
 # Sanity check wrapper
 def get_pin_value(pin):
     assert pin in Util.BCM_PINS
@@ -66,6 +68,7 @@ def get_pin_value(pin):
         return GPIO.input(pin)
     else:
         return -1
+
 
 # Sanity check wrapper
 def set_pin_value(pin, state):
@@ -107,6 +110,7 @@ def set_mode_outputs(pins, initial):
     else:
         logger.info('Fake setting pullups pins %s',pins)
 
+
 def toggle_pin_value(pin):
     assert pin in Util.BCM_PINS
     if isRPi and not lockout:
@@ -121,10 +125,11 @@ def toggle_pin_value(pin):
     else:
         pass
 
+
 # Pulsing pin (typically step pin) for specified time period
 def pulse_pin(pin, tm):
     set_pin_value(pin, GPIO.HIGH)
-    time.sleep(tm)
+    if tm > 0: time.sleep(tm)
     set_pin_value(pin, GPIO.LOW)
 
 
@@ -177,8 +182,14 @@ def gpio_summary():
 
 
 def shutdown():
-    logger.info('Shutting down motors')
-    for mt in motors.values():
-        mt.shutdown()
-    logger.info('GPIO cleanup on shutdown')
-    GPIO.cleanup()
+    try:
+        logger.info('Shutting down motors')
+        for mt in motors.values():
+            mt.shutdown()
+        logger.info('GPIO cleanup on shutdown')
+        GPIO.cleanup()
+        logger.info('Finally, setting not-enable pins high')
+        GPIO.setmode(GPIO.BCM)
+        set_mode_outputs([m.PIN_ENABLE for m in motors.values()], GPIO.HIGH)
+    except Exception:
+        logger.fatal("Shudown failure, exiting dirty...", exc_info=True)
