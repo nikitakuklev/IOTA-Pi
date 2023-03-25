@@ -7,79 +7,81 @@ import time
 import GPIOMgr
 import Util
 
-DISABLED = 50
-IDLE = 100
-MOVING = 200
-HOMING = 250
-ERROR = 300
-UNKNOWN = -100
-UNINITIALIZED = -50
-STATES_STR = {50: 'DISABLED', 100: 'IDLE', 200: 'MOVING', 250: 'HOMING', 300: 'ERROR', -100: 'UNKNOWN', -50: 'UNINITIALIZED'}
+DISABLED = 50       # Disabled but otherwise normal
+IDLE = 100          # Enabled but idle
+MOVING = 200        #
+HOMING = 250        # Homing to find +- limits
+ERROR = -10         # Generic error state
+HARDKILL = -20      # Permanently disabled
+UNKNOWN = -100      #
+UNINITIALIZED = -50 #
+STATES_STR = {DISABLED: 'DISABLED', IDLE: 'IDLE', MOVING: 'MOVING', HOMING: 'HOMING', ERROR: 'ERROR',
+              HARDKILL: 'HARDKILL', UNKNOWN: 'UNKNOWN', UNINITIALIZED: 'UNINITIALIZED'}
+
+ILOCK_DN = 100
+ILOCK_UP = 110
+ILOCK_ESTOP = 120
+ILOCK_OK = 10
+ILOCK_STR = {100: 'ILOCK_DN', 110: 'ILOCK_UP', 120: 'ILOCK_ESTOP'}
 
 
 class Stepper:
     DIR_UP = 1
     DIR_DN = 0
-    ILOCK_DN = 100
-    ILOCK_UP = 110
-    ILOCK_ESTOP = 120
-    ILOCK_OK = 10
-    ILOCK_STR = {100: 'ILOCK_DN', 110: 'ILOCK_UP', 120: 'ILOCK_ESTOP'}
 
     ESTOP = False
 
     position = -1
     state = UNKNOWN
 
-    def __init__(self, uuid, name, fname, Dr, St, En, Sl, LUp, LDn, LUpState, LDnState, st_size, ptime, st_dtime, aen, adis,
+    def __init__(self, uuid, name, fname, dr, st, en, sl, LUp, LDn, LUpState, LDnState, st_size, ptime, st_dtime, aen, adis,
                  jerk, vel, acc):
         self.logger = logging.getLogger(__name__+'.'+str(uuid))
         try:
-            #Sanity checks
-            assert (all(x in Util.BCM_PINS for x in [Dr, St, En, Sl, LUp, LDn]))
-            assert (all(x in [0,1] for x in [LUpState, LDnState]))
+            # Sanity checks
+            assert (all(x in Util.BCM_PINS for x in [dr, st, en, sl, LUp, LDn]))
+            assert (all(x in [0, 1] for x in [LUpState, LDnState]))
             assert (0 <= ptime < 1000)
             assert (0 <= st_dtime < 1000)
-            for i in [jerk, vel, acc]: assert (0 <= i < 20000)
+            for i in [jerk, vel, acc]:
+                assert (0 <= i < 20000)
 
             # Basic parameters
             self.uuid = uuid
             self.name = name
             self.full_name = fname
-            self.PIN_DIR = Dr
-            self.PIN_STEP = St
-            self.PIN_ENABLE = En
-            self.PIN_SLEEP = Sl
-            self.PIN_LIM_UP = LUp
-            self.PIN_LIM_DN = LDn
-            self.LIM_UP_HIT = LUpState
-            self.LIM_DN_HIT = LDnState
+            self.PIN_DIR = dr
+            self.PIN_STEP = st
+            self.PIN_ENABLE = en
+            self.PIN_SLEEP = sl
+            self.PIN_LIM_UP, self.LIM_UP_HIT = LUp, LUpState
+            self.PIN_LIM_DN, self.LIM_DN_HIT = LDn, LDnState
+
+            # Step size factor corresponds to 1/microsteps, with single steps at 256 level
             self.step_size = st_size
+
             # Converting pulse time to s (below 1ms is not possible without RT kernel or C bindings)
             self.pulse_time = ptime / 1000.0
             self.step_delay = st_dtime / 1000.0
+
             # Motion parameters
-            self.jerk = jerk
-            self.vel = vel
-            self.acc = acc
+            self.jerk, self.vel, self.acc = jerk, vel, acc
 
             self.auto_enable = bool(aen)
             self.auto_disable = bool(adis)
 
             self.state = UNINITIALIZED
             self.homed = False
-            self.moving = False
             self.thread_on = False
-            self.error = False
 
             # Event indicating new command
             self.stopevt = threading.Event()
             self.doneevt = threading.Event()
-            self.cmdq = queue.Queue(maxsize=100)
+            self.queue = queue.Queue(maxsize=100)
 
             self.logger.info('NEW Stepper (%s) (uuid %s) (fname %s) with pins %d,%d,%d,%d,%d,%d (Dr,St,En,Sl,LUp,LDn)',
-                             name, uuid, fname, Dr, St, En, Sl, LUp, LDn)
-            self.logger.info('Motion: (%f) (%f) (%f) (jerk, vel, acc)',
+                             name, uuid, fname, dr, st, en, sl, LUp, LDn)
+            self.logger.info('Motion params: (%f) (%f) (%f) (jerk, vel, acc)',
                              self.jerk, self.vel, self.acc)
         except:
             self.logger.exception("Failed to create stepper object")
@@ -127,9 +129,12 @@ class Stepper:
 
     # For steppers, we can reset live without any further actions
     def reinitialize(self):
-        if not self.moving:
+        if not self.is_moving():
             self.initialize()
 
+    def is_moving(self):
+        return self.state == MOVING or self.state == HOMING
+    
     def control_thread(self):
         """
         Independent thread responsible for executing motor commands
@@ -141,7 +146,7 @@ class Stepper:
             while self.thread_on:
                 # Get next msg
                 try:
-                    msg = self.cmdq.get(block=True, timeout=0.05)
+                    msg = self.queue.get(block=True, timeout=0.05)
                 except queue.Empty:
                     pass
                 else:
@@ -151,7 +156,7 @@ class Stepper:
                         direction = msg[1]
                         numsteps = msg[2]
                         force = msg[3]
-                        if ilock != self.ILOCK_OK:
+                        if ilock != ILOCK_OK:
                             if force:
                                 self.logger.warning('Forced move with active interlock %s - this is dangerous!', ilock)
                             else:
@@ -194,8 +199,8 @@ class Stepper:
                             self.doneevt.set()
                     if msg[0] == 'home':
                         ilock = self.check_interlocks(raise_exc=False)
-                        if ilock != self.ILOCK_OK:
-                            self.logger.warning('Interlock %s FAIL - move ignored!', self.ILOCK_STR[ilock])
+                        if ilock != ILOCK_OK:
+                            self.logger.warning('Interlock %s FAIL - move ignored!', ILOCK_STR[ilock])
                             continue
                         direction = msg[1]
 
@@ -244,8 +249,8 @@ class Stepper:
                     elif msg[0] == 'enable':
                         force = msg[1]
                         ilock = self.check_interlocks(raise_exc=False)
-                        if ilock != self.ILOCK_OK and not force:
-                            self.logger.warning('interlock %s FAIL, enable ignored!', self.ILOCK_STR[ilock])
+                        if ilock != ILOCK_OK and not force:
+                            self.logger.warning('interlock %s FAIL, enable ignored!', ILOCK_STR[ilock])
                             continue
                         if self.error != 0:
                             if force:
@@ -259,8 +264,8 @@ class Stepper:
                             self._enable_direct()
                     elif msg[0] == 'disable':
                         ilock = self.check_interlocks(raise_exc=False)
-                        if ilock != self.ILOCK_OK:
-                            self.logger.warning('interlock %s FAIL, proceeding with disable anyways', self.ILOCK_STR[ilock])
+                        if ilock != ILOCK_OK:
+                            self.logger.warning('interlock %s FAIL, proceeding with disable anyways', ILOCK_STR[ilock])
                         # Acquire move lock
                         with GPIOMgr.movelock:
                             self._disable_direct()
@@ -335,7 +340,7 @@ class Stepper:
 
         if override and stop_on_unlatch:
             initial_ilock = self.check_interlocks(raise_exc=False, silent=True)
-            if initial_ilock == self.ILOCK_OK:
+            if initial_ilock == ILOCK_OK:
                 self.logger.warning('Stop on ilock release requested but no interlock is active')
                 return -2 # We are not latched
             else:
@@ -345,15 +350,15 @@ class Stepper:
             if override:
                 # Ensure we can only move away from current interlock
                 r = self.check_interlocks(raise_exc=False, silent=True)
-                if stop_on_unlatch and r == self.ILOCK_OK:
+                if stop_on_unlatch and r == ILOCK_OK:
                     self.logger.debug('Ilock release detected from state %s to %s - stopping', initial_ilock, r)
                     raise MoveException('hi')
-                elif r != self.ILOCK_OK:
-                    if r == self.ILOCK_DN:
+                elif r != ILOCK_OK:
+                    if r == ILOCK_DN:
                         if not self.direction == self.DIR_UP:
                             pass # we will not move more in wrong direction
                             #self.logger.debug('Ilock release detected from state %s to %s - stopping', initial_ilock, r)
-                    elif r == self.ILOCK_UP:
+                    elif r == ILOCK_UP:
                         if not self.direction == self.DIR_DN:
                             pass # we will not move more in wrong direction
                             #self.logger.debug('Ilock release detected from state %s to %s - stopping', initial_ilock, r)
@@ -370,7 +375,7 @@ class Stepper:
                 if self.stopevt.is_set():
                     # Stop command received - clear things out
                     self.logger.warning("Stop command detected!")
-                    self.cmdq.queue.clear()
+                    self.queue.queue.clear()
                     self.stopevt.clear()
                     return -1
                 end = time.perf_counter()
@@ -445,7 +450,7 @@ class Stepper:
             if raise_exc:
                 raise MoveException("ESTOP")
             else:
-                return self.ILOCK_ESTOP
+                return ILOCK_ESTOP
         # Then check both limits
         up = GPIOMgr.get_pin_value(self.PIN_LIM_UP)
         up2 = GPIOMgr.get_pin_value(self.PIN_LIM_UP)
@@ -454,7 +459,7 @@ class Stepper:
             if raise_exc:
                 raise MoveException("UP")
             else:
-                return self.ILOCK_UP
+                return ILOCK_UP
         dn = GPIOMgr.get_pin_value(self.PIN_LIM_DN)
         dn2 = GPIOMgr.get_pin_value(self.PIN_LIM_DN)
         if dn == dn2 == self.LIM_DN_HIT:
@@ -466,16 +471,16 @@ class Stepper:
             if raise_exc:
                 raise MoveException("DN")
             else:
-                return self.ILOCK_DN
+                return ILOCK_DN
         # Nothing else for now, but we should add other sanity checks...
         #self.logger.debug("M %s - interlock check OK", self.full_name)
-        return self.ILOCK_OK
+        return ILOCK_OK
 
     # Checks if limit reached (indicated by LOW, closed circuit)
     def is_lim_reached(self, direction):
         if direction == self.DIR_DN:
             return GPIOMgr.get_pin_value(self.PIN_LIM_DN) == self.LIM_DN_HIT
-        elif direction == self.DIR_UP:
+        elif direction == Stepper.DIR_UP:
             return GPIOMgr.get_pin_value(self.PIN_LIM_UP) == self.LIM_UP_HIT
         else:
             raise ValueError("Wrong limit check direction")
@@ -507,22 +512,22 @@ class Stepper:
 
         # If queue is full, we reject command
         try:
-            if (self.moving or not self.cmdq.empty()) and block:
+            if (self.is_moving() or not self.queue.empty()) and block:
                 self.logger.warning('Blocking commands cannot be queued, ignoring!')
                 return 'Failed' #unsupported queue and block at same time
-            if (self.moving or not self.cmdq.empty()) and force:
+            if (self.is_moving() or not self.queue.empty()) and force:
                 self.logger.warning('Forced commands cannot be queued, queue will be flushed!')
-                self.logger.warning('Currently in queue - %s', self.cmdq.qsize())
-                self.cmdq.empty()
+                self.logger.warning('Currently in queue - %s', self.queue.qsize())
+                self.queue.empty()
                 #return 'Failed'
 
-            if self.moving:
+            if self.is_moving():
                 self.logger.warning('Another move running - command will be queued')
-                self.cmdq.put_nowait(['move', dir, numsteps, force])
+                self.queue.put_nowait(['move', dir, numsteps, force])
                 return 'Queued'
             if block:
                 self.doneevt.clear()
-                self.cmdq.put_nowait(['move', dir, numsteps, force])
+                self.queue.put_nowait(['move', dir, numsteps, force])
                 self.logger.debug('Awaiting move completion')
                 self.doneevt.wait()
                 if self.error != 0:
@@ -530,9 +535,9 @@ class Stepper:
                 else:
                     return 'Done'
             else:
-                if self.moving:
+                if self.is_moving():
                     self.logger.warning('Another move running - command will be queued')
-                self.cmdq.put_nowait(['move', dir, numsteps, force])
+                self.queue.put_nowait(['move', dir, numsteps, force])
                 return 'Queued'
         except queue.Full:
             return 'Fail'
@@ -547,12 +552,12 @@ class Stepper:
         assert dir in [Stepper.DIR_UP, Stepper.DIR_DN]
 
         # If queue is full, we reject command
-        if self.cmdq.empty():
-            if not self.state == IDLE or self.moving:
+        if self.queue.empty():
+            if not self.state == IDLE or self.is_moving():
                 self.logger.error('Attempt to home in state %s - very bad!', self.state)
                 return False
             self.doneevt.clear()
-            self.cmdq.put_nowait(['home', dir])
+            self.queue.put_nowait(['home', dir])
             self.doneevt.wait()
             return True
         else:
@@ -571,9 +576,9 @@ class Stepper:
             return "Rejected"
 
         # If queue is not empty, reject command (no queue for enabling)
-        if self.cmdq.empty():
+        if self.queue.empty():
             try:
-                self.cmdq.put_nowait(['enable', force])
+                self.queue.put_nowait(['enable', force])
                 return "Queued"
             except queue.Full:
                 return "Rejected"
@@ -592,9 +597,9 @@ class Stepper:
             return False
 
         # If queue is not empty, reject command (no queue for enabling)
-        if self.cmdq.empty():
+        if self.queue.empty():
             try:
-                self.cmdq.put_nowait(['disable'])
+                self.queue.put_nowait(['disable'])
                 return True
             except queue.Full:
                 return False
@@ -638,7 +643,7 @@ class Stepper:
                 'threadon': self.thread_on,
                 'pos': self.position,
                 'dir': self.direction,
-                'queuesize': self.cmdq.qsize(),
+                'queuesize': self.queue.qsize(),
                 'limup': GPIOMgr.get_pin_value(self.PIN_LIM_UP) == self.LIM_UP_HIT,
                 'limdn': GPIOMgr.get_pin_value(self.PIN_LIM_DN) == self.LIM_DN_HIT,
                 'jerk': self.jerk,
@@ -655,7 +660,7 @@ class Stepper:
         Shuts down motor, waiting to ensure thread is done
         """
         self.logger.info('Shutdown initiated - stopping and cleaning up')
-        if self.moving:
+        if self.is_moving():
             self.stop()
         self.thread_on = False
         time.sleep(0.5)
@@ -692,4 +697,7 @@ class Stepper:
 
 
 class MoveException(Exception):
+    pass
+
+class MotorException(Exception):
     pass
